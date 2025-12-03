@@ -3,11 +3,23 @@
 ## Setup
 
 ```bash
-# Activate virtual environment
 source venv/bin/activate
+```
 
-# Run the script
-python embed_demo.py
+## Usage
+
+```bash
+# Initialize database with sample data
+python demo.py setup
+
+# Add your own texts
+python demo.py seed
+
+# Compare two texts
+python demo.py compare
+
+# Search for similar texts
+python demo.py search
 ```
 
 ## Requirements
