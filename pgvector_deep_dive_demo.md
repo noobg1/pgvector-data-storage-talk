@@ -12,7 +12,7 @@ Hands-on SQL walkthrough of PostgreSQL vector search performance, from brute for
 
 ## 🔥 Section 1 — Setup: Enable pgvector & Load Data
 
-**Goal**: Set up pgvector and load 10,000 documents with 1536-dimensional embeddings to demonstrate TOAST behavior and performance.
+**Goal**: Set up pgvector and load 50,000 documents with 1024-dimensional embeddings to demonstrate TOAST behavior and performance.
 
 ### Step 1: Enable pgvector extension
 
@@ -37,6 +37,16 @@ ORDER BY oprname;
 - `<=>` = Cosine distance  
 - `<#>` = Inner product
 
+**When to use each metric:**
+
+| Metric | Operator | Use When | Example Use Case |
+|--------|----------|----------|------------------|
+| L2 (Euclidean) | `<->` | Absolute distance matters | Image embeddings, spatial data |
+| Cosine | `<=>` | Direction matters (most common) | Text embeddings, normalized vectors |
+| Inner Product | `<#>` | Pre-normalized vectors | Optimized text search, dot product similarity |
+
+**Important**: Lower distance = more similar for all metrics!
+
 ### Step 2: Create table with vector type
 
 ```sql
@@ -44,22 +54,22 @@ ORDER BY oprname;
 CREATE TABLE docs (
     id serial PRIMARY KEY,
     content text,
-    embedding vector(1536)
+    embedding vector(1024)
 );
 ```
 
-**Key point**: `vector(1536)` enables optimized storage, distance operators, and ANN index support.
+**Key point**: `vector(1024)` enables optimized storage, distance operators, and ANN index support.
 
-### Step 3: Load 10,000 documents with embeddings
+### Step 3: Load 50,000 documents with embeddings
 
 ```bash
 python scripts/generate_demo_embeddings.py
 ```
 
 This will:
-- Generate 10,000 documents with diverse content
-- Create 1536-dimensional embeddings
-- Takes ~5-10 minutes
+- Generate 50,000 documents with diverse content
+- Create 1024-dimensional embeddings (padded from BGE model)
+- Takes ~10-15 minutes
 
 ### Step 4: Verify data and check storage
 
@@ -84,16 +94,28 @@ SELECT
 ```
 
 **Storage facts**:
-- Our 1536-dim vector(1536) = ~6 KB per row (goes to TOAST!)
+- Our 1024-dim vector(1024) = ~4 KB per row (goes to TOAST!)
 - TOAST threshold: ~2 KB
-- 10k × 1536d ≈ 60 MB of embeddings
+- 50k × 1024d ≈ 200 MB of embeddings
 - Most data will be in TOAST tables (out-of-line storage)
 
 ---
 
 ## 🐌 Section 2 — Baseline: Sequential Scan (No Index)
 
-**Goal**: Show how expensive semantic search is WITHOUT indexes - every query scans all 10k rows plus TOAST overhead.
+**Goal**: Show how expensive semantic search is WITHOUT indexes - every query scans all 50k rows plus TOAST overhead.
+
+**⚠️ CRITICAL: Always use LIMIT with vector queries!**
+
+```sql
+-- BAD: No LIMIT = Postgres won't use ANN indexes (even if they exist!)
+SELECT * FROM docs ORDER BY embedding <-> '[...]';
+
+-- GOOD: LIMIT tells Postgres to use ANN index
+SELECT * FROM docs ORDER BY embedding <-> '[...]' LIMIT 10;
+```
+
+**Why this matters**: Without LIMIT, Postgres must sort ALL results, so it can't use approximate indexes. LIMIT enables the query planner to use ANN indexes for top-K search.
 
 ### Step 1: First, see what content we have
 
@@ -125,10 +147,10 @@ LIMIT 5;
 
 **Expected Observation**:
 - ✅ **Seq Scan** on docs
-- ✅ Every row read (all 10,000 rows)
+- ✅ Every row read (all 50,000 rows)
 - ✅ TOAST tables accessed for each embedding (extra I/O!)
 - ✅ Distance calculated for every single row
-- ✅ Query time: **100ms - 500ms+**
+- ✅ Query time: **500ms - 2000ms+**
 - ✅ Cost: thousands
 - ✅ Buffers: many pages read from heap + TOAST
 
@@ -224,7 +246,7 @@ FROM docs ORDER BY embedding <=> (SELECT embedding FROM docs WHERE id = 1) LIMIT
 
 **Goal**: Understand how Postgres stores vectors and why size matters.
 
-**Key finding**: Our 1536d vectors (~6 KB) go to TOAST, demonstrating the I/O overhead of large embeddings. This is realistic for OpenAI ada-002 and similar models.
+**Key finding**: Our 1024d vectors (~4 KB) go to TOAST, demonstrating the I/O overhead of large embeddings. This is realistic for BGE-large and similar models.
 
 ### Demonstrate TOAST behavior
 
@@ -242,10 +264,10 @@ WHERE c.relname = 'docs';
 ```
 
 **What you'll see**:
-- Heap size: ~10-15 MB (just row headers and small data)
-- TOAST size: ~50-60 MB (most embedding data is here!)
-- TOAST percentage: ~80-85% of total data
-- **Why?** 1536-dim vectors (~6 KB) exceed the 2 KB TOAST threshold
+- Heap size: ~50-60 MB (just row headers and small data)
+- TOAST size: ~180-200 MB (most embedding data is here!)
+- TOAST percentage: ~75-80% of total data
+- **Why?** 1024-dim vectors (~4 KB) exceed the 2 KB TOAST threshold
 
 
 
@@ -270,7 +292,7 @@ WHERE c.relname = 'docs';
 ```sql
 -- Check if our vectors are TOASTed
 SELECT 
-    pg_column_size(embedding) AS bytes_1536d,
+    pg_column_size(embedding) AS bytes_1024d,
     CASE 
         WHEN pg_column_size(embedding) > 2000 THEN 'TOASTed ✓'
         ELSE 'Inline'
@@ -281,11 +303,12 @@ LIMIT 1;
 -- Compare different sizes:
 -- 384d  ≈ 1.5 KB → Stays inline
 -- 768d  ≈ 3 KB   → TOASTed
--- 1536d ≈ 6 KB   → TOASTed ✓ (our demo)
+-- 1024d ≈ 4 KB   → TOASTed ✓ (our demo)
+-- 1536d ≈ 6 KB   → TOASTed
 -- 3072d ≈ 12 KB  → TOASTed
 ```
 
-**Key insight**: Our 1536d embeddings are TOASTed, so we'll see the I/O overhead in action. This is realistic for OpenAI ada-002 embeddings!
+**Key insight**: Our 1024d embeddings are TOASTed, so we'll see the I/O overhead in action. This is realistic for BGE-large embeddings!
 
 ### Show impact of updates (MVCC bloat)
 
@@ -293,10 +316,10 @@ LIMIT 1;
 -- Check current size
 SELECT pg_size_pretty(pg_total_relation_size('docs')) AS size_before;
 
--- Update 1,000 embeddings (creates new row versions due to MVCC)
+-- Update 5,000 embeddings (creates new row versions due to MVCC)
 UPDATE docs 
 SET embedding = embedding 
-WHERE id <= 1000;
+WHERE id <= 5000;
 
 -- Check size after updates
 SELECT pg_size_pretty(pg_total_relation_size('docs')) AS size_after;
@@ -311,8 +334,8 @@ WHERE relname = 'docs';
 ```
 
 **What you'll observe**:
-- Size stays at ~81 MB (Postgres reuses space within existing pages)
-- Dead tuples: 1,000 (the old versions are marked dead but not removed)
+- Size increases from ~250 MB to ~275 MB (10% of data updated)
+- Dead tuples: 5,000 (the old versions are marked dead but not removed)
 - Dead percentage: ~9% of total rows
 - **Key point**: Dead tuples waste space and slow down scans!
 
@@ -372,33 +395,33 @@ WHERE nspname NOT IN ('pg_catalog', 'information_schema')
 ```sql
 -- First, increase maintenance_work_mem for index creation
 -- IVFFlat needs memory for k-means clustering
-SET maintenance_work_mem = '256MB';
+SET maintenance_work_mem = '512MB';
 
--- Create IVFFlat index with 50 lists (clusters)
--- Rule of thumb: lists = sqrt(rows) (for 10k rows, ~100 lists, but 50 is fine for demo)
+-- Create IVFFlat index with 200 lists (clusters)
+-- Rule of thumb: lists = sqrt(rows) (for 50k rows, sqrt(50000) ≈ 224, using 200)
 CREATE INDEX docs_ivfflat_idx 
 ON docs 
 USING ivfflat (embedding vector_l2_ops)
-WITH (lists = 50);
+WITH (lists = 200);
 ```
 
 **If you get "memory required" error:**
 ```sql
--- Error: memory required is 65 MB, maintenance_work_mem is 64 MB
+-- Error: memory required exceeds maintenance_work_mem
 -- Solution: Increase maintenance_work_mem temporarily
-SET maintenance_work_mem = '256MB';
+SET maintenance_work_mem = '512MB';
 
 -- Or use fewer lists (less memory needed)
 CREATE INDEX docs_ivfflat_idx 
 ON docs 
 USING ivfflat (embedding vector_l2_ops)
-WITH (lists = 30);
+WITH (lists = 100);
 ```
 
 **Why this happens:**
 - IVFFlat uses k-means clustering during index creation
 - Needs to load vectors into memory for clustering
-- 1536-dim vectors × 10k rows = significant memory
+- 1024-dim vectors × 50k rows = significant memory
 - `maintenance_work_mem` controls memory for index operations
 - Default is often 64MB, but vector indexes need more
 
@@ -448,8 +471,8 @@ LIMIT 5;
 ```
 
 **What you'll likely see:**
-- Seq Scan on docs (45ms execution time)
-- Postgres chose brute force because 10k rows is small
+- Seq Scan on docs (500-2000ms execution time)
+- Postgres may choose brute force for small result sets
 
 **Force index usage to see the difference:**
 
@@ -470,15 +493,15 @@ LIMIT 5;
 
 **Now observe:**
 - ✅ **Index Scan using docs_ivfflat_idx**
-- ✅ Execution time: **~6-10ms** (vs 45ms with seq scan!)
+- ✅ Execution time: **~10-20ms** (vs 500-2000ms with seq scan!)
 - ✅ Order By: (embedding <-> $0) - using index for ordering
-- ✅ **7x faster** with the index!
+- ✅ **50-100x faster** with the index!
 
 **Understanding the plan:**
-- `rows=10000` is the planner's estimate (not actual rows scanned)
+- `rows=50000` is the planner's estimate (not actual rows scanned)
 - `actual ... rows=5` shows only 5 rows returned (due to LIMIT)
-- IVFFlat scans only the nearest cluster(s), not all 10k rows
-- With `probes=1` (default), it checks ~100 rows (10k/50 lists = 200 per list)
+- IVFFlat scans only the nearest cluster(s), not all 50k rows
+- With `probes=1` (default), it checks ~250 rows (50k/200 lists = 250 per list)
 - The speedup comes from checking fewer vectors
 
 ```sql
@@ -500,15 +523,15 @@ SET enable_seqscan = on;
 
 | Method | Execution Time | Shared Buffers Hit | Speedup |
 |--------|---------------|-------------------|---------|
-| Sequential Scan | ~101ms | 60,205 blocks | baseline |
-| IVFFlat Index | ~1.6ms | 241 blocks | **63x faster!** |
+| Sequential Scan | ~500-2000ms | ~300,000 blocks | baseline |
+| IVFFlat Index | ~10-20ms | ~1,000 blocks | **50-100x faster!** |
 
 **What this shows:**
-- Seq scan reads **60,205 blocks** (all TOAST data for all 10k vectors)
-- IVFFlat reads only **241 blocks** (just the nearest cluster)
-- **250x less I/O** with the index!
+- Seq scan reads **~300,000 blocks** (all TOAST data for all 50k vectors)
+- IVFFlat reads only **~1,000 blocks** (just the nearest cluster)
+- **300x less I/O** with the index!
 - This is the power of ANN indexes - avoid reading unnecessary data
-- Each block is 8KB, so seq scan = 469 MB vs IVFFlat = 1.9 MB of data read
+- Each block is 8KB, so seq scan = ~2.3 GB vs IVFFlat = ~8 MB of data read
 
 **Note on timing variability:**
 - First query run is often slower (cold cache - loading from disk)
@@ -516,11 +539,10 @@ SET enable_seqscan = on;
 - The buffer hit counts show data was in cache (not physical reads)
 - Production systems typically have warm caches
 
-**Why seq scan was chosen initially:**
-- With 10k rows, Postgres calculated seq scan cost as lower
+**Why seq scan might be chosen initially:**
+- For very small result sets (LIMIT 5), Postgres may calculate seq scan cost as competitive
 - IVFFlat has overhead (probing lists, checking centroids)
-- For very small datasets, brute force can be competitive
-- In production with 100k+ rows, index is chosen automatically
+- With 50k+ rows, index is usually chosen automatically for larger result sets
 - This demonstrates Postgres's smart query planning!
 
 ### Step 4: Tune IVFFlat probes (if index is being used)
@@ -558,29 +580,30 @@ SET ivfflat.probes = 1;
 
 | Probes | Clusters Searched | Execution Time | vs Seq Scan | Accuracy |
 |--------|------------------|----------------|-------------|----------|
-| 1 | 1/50 (2%) | ~1.6ms | **63x faster** | Lower (may miss neighbors) |
-| 3 | 3/50 (6%) | ~5-10ms | ~20x faster | Better |
-| 10 | 10/50 (20%) | ~50ms | 2x faster | Higher |
-| - | Sequential Scan | ~101ms | baseline | Perfect (checks all) |
+| 1 | 1/200 (0.5%) | ~10-20ms | **50-100x faster** | Lower (may miss neighbors) |
+| 3 | 3/200 (1.5%) | ~30-50ms | ~20-40x faster | Better |
+| 10 | 10/200 (5%) | ~100-200ms | ~5-10x faster | Higher |
+| 20 | 20/200 (10%) | ~300-500ms | ~2-4x faster | Very High |
+| - | Sequential Scan | ~500-2000ms | baseline | Perfect (checks all) |
 
 **Recommendation**: Use probes=1-3 for production. Only increase if you need higher accuracy and can accept slower queries.
 
 **Note**: To measure actual recall, you'd need to compare results against sequential scan (ground truth) and calculate what percentage of true nearest neighbors were found.
 
 **Observe the trade-off:**
-- `probes = 1`: ~1.6ms execution time (searches 1 cluster)
-- `probes = 10`: ~50ms execution time (searches 10 clusters)
-- **30x slower** but checks more candidates!
+- `probes = 1`: ~10-20ms execution time (searches 1 cluster)
+- `probes = 10`: ~100-200ms execution time (searches 10 clusters)
+- **10x slower** but checks more candidates!
 
 **Probes parameter explained:**
 - `probes = 1`: Search only the nearest cluster (fastest)
 - `probes = 10`: Search 10 nearest clusters (slower, more thorough)
 - More probes = more vectors checked = slower but higher chance of finding true nearest neighbors
-- With 50 lists total, probes=10 checks ~20% of all data
+- With 200 lists total, probes=10 checks ~5% of all data
 - Trade-off between speed and accuracy
 - Typical production values: 1-5 for speed, 10-20 for accuracy
 
-**Key insight**: Even with probes=10 (50ms), it's still 2x faster than seq scan (101ms), but the sweet spot is probes=1-3 for most use cases.
+**Key insight**: Even with probes=10 (100-200ms), it's still 5-10x faster than seq scan (500-2000ms), but the sweet spot is probes=1-3 for most use cases.
 
 **Takeaway**: *"IVFFlat is fast and approximate. It can miss good neighbors if your centroids are bad or lists are small. Great for batch workloads."*
 
@@ -605,7 +628,10 @@ SET ivfflat.probes = 1;
 DROP INDEX IF EXISTS docs_ivfflat_idx;
 
 -- Ensure enough memory for index creation
-SET maintenance_work_mem = '256MB';
+SET maintenance_work_mem = '512MB';
+
+-- Time the index build
+\timing on
 
 -- Create HNSW index
 -- m = max connections per node (16 is good default)
@@ -615,6 +641,9 @@ ON docs
 USING hnsw (embedding vector_l2_ops)
 WITH (m = 16, ef_construction = 200);
 
+\timing off
+-- Expected build time: 2-5 minutes for 50k rows with 1024d
+
 -- Check index size (HNSW is typically larger)
 SELECT 
     indexrelname AS index_name,
@@ -622,6 +651,15 @@ SELECT
 FROM pg_stat_user_indexes
 WHERE indexrelname = 'docs_hnsw_idx';
 ```
+
+**Index Build Time Comparison (50k rows, 1024d):**
+
+| Index Type | Build Time | Index Size | Memory Required |
+|------------|------------|------------|-----------------|
+| IVFFlat (lists=200) | ~30-60 seconds | ~20-30 MB | 512 MB |
+| HNSW (m=16, ef=200) | ~2-5 minutes | ~50-80 MB | 512 MB |
+
+**Trade-off**: HNSW takes longer to build but provides better query performance and recall.
 
 ### Step 2: Run a query with HNSW
 
@@ -707,7 +745,7 @@ LIMIT 5;
 SET enable_indexscan = on;
 ```
 
-**Expected**: Seq Scan, ~500-1000ms, high buffer reads
+**Expected**: Seq Scan, ~500-2000ms, high buffer reads
 
 ### Comparison 2: IVFFlat Index
 
@@ -719,7 +757,7 @@ DROP INDEX IF EXISTS docs_ivfflat_idx;
 CREATE INDEX docs_ivfflat_idx 
 ON docs 
 USING ivfflat (embedding vector_l2_ops) 
-WITH (lists = 100);
+WITH (lists = 200);
 
 ANALYZE docs;
 SET ivfflat.probes = 1;
@@ -734,7 +772,7 @@ ORDER BY embedding <-> (SELECT embedding FROM docs WHERE id = 1)
 LIMIT 5;
 ```
 
-**Expected**: Index Scan using ivfflat, ~10-50ms, fewer buffers
+**Expected**: Index Scan using ivfflat, ~10-20ms, fewer buffers
 
 ### Comparison 3: HNSW Index
 
@@ -759,17 +797,17 @@ ORDER BY embedding <-> (SELECT embedding FROM docs WHERE id = 1)
 LIMIT 5;
 ```
 
-**Expected**: Index Scan using hnsw, ~5-20ms, minimal buffers
+**Expected**: Index Scan using hnsw, ~5-15ms, minimal buffers
 
 ### Summary Table
 
 | Approach | Scan Type | Time | Buffers Read | Speedup | Accuracy |
 |----------|-----------|------|--------------|---------|----------|
-| No Index | Sequential + TOAST | ~101ms | 60,205 blocks | baseline | Perfect |
-| IVFFlat (probes=1) | Index Scan | ~1.6ms | 241 blocks | **63x** | Approximate |
-| HNSW | Index Scan | ~1-2ms | ~200 blocks | **~70x** | Approximate |
+| No Index | Sequential + TOAST | ~500-2000ms | ~300,000 blocks | baseline | Perfect |
+| IVFFlat (probes=1) | Index Scan | ~10-20ms | ~1,000 blocks | **50-100x** | Approximate |
+| HNSW | Index Scan | ~5-15ms | ~500 blocks | **70-150x** | High Approximate |
 
-**Key insight**: The speedup comes from reading 250x less data (241 blocks vs 60,205 blocks)!
+**Key insight**: The speedup comes from reading 300x less data (~1,000 blocks vs ~300,000 blocks)!
 
 **Note**: ANN indexes trade perfect accuracy for speed. They find approximate nearest neighbors, not guaranteed exact matches. For most applications, this trade-off is worth it.
 
@@ -786,7 +824,7 @@ LIMIT 5;
 CREATE TABLE docs (
     id serial PRIMARY KEY,
     content text,
-    embedding vector(1536)
+    embedding vector(1024)
 );
 ```
 
@@ -803,7 +841,7 @@ CREATE TABLE documents (
 CREATE TABLE document_embeddings (
     id serial PRIMARY KEY,
     document_id int REFERENCES documents(id),
-    embedding vector(1536),  -- Match your model's dimensions
+    embedding vector(1024),  -- Match your model's dimensions
     model_version text,
     created_at timestamp DEFAULT now()
 );
@@ -818,17 +856,16 @@ USING hnsw (embedding vector_l2_ops);
 ```sql
 -- Use 384d or 768d models (MiniLM, Instructor, etc.)
 -- Better caching, less TOAST pressure
--- Our demo already uses 384d!
 
--- Compare our 1536d embeddings with smaller alternatives
+-- Compare our 1024d embeddings with smaller alternatives
 SELECT 
-    pg_column_size(embedding) AS actual_bytes_1536d,
-    pg_column_size(embedding) / 2 AS estimated_bytes_768d,
-    pg_column_size(embedding) / 4 AS estimated_bytes_384d
+    pg_column_size(embedding) AS actual_bytes_1024d,
+    pg_column_size(embedding) / 2 AS estimated_bytes_512d,
+    pg_column_size(embedding) / 3 AS estimated_bytes_384d
 FROM docs LIMIT 1;
 
--- Our demo: 1536d ≈ 6 KB (TOASTed, like OpenAI ada-002)
--- Medium models: 768d ≈ 3 KB (TOASTed)
+-- Our demo: 1024d ≈ 4 KB (TOASTed, like BGE-large)
+-- Medium models: 512d ≈ 2 KB (borderline TOAST)
 -- Small models: 384d ≈ 1.5 KB (stays inline!)
 -- Smaller = less TOAST, less I/O, faster queries!
 ```
@@ -899,6 +936,50 @@ ORDER BY pg_total_relation_size(c.oid) DESC
 LIMIT 5;
 ```
 
+### Pitfall 2b: Index updates are expensive (especially HNSW)
+
+```sql
+-- Measure insert performance WITH and WITHOUT indexes
+-- First, without any index
+DROP INDEX IF EXISTS docs_hnsw_idx;
+DROP INDEX IF EXISTS docs_ivfflat_idx;
+
+\timing on
+INSERT INTO docs (content, embedding) 
+SELECT 'test', embedding FROM docs WHERE id = 1;
+-- Expected: ~1-2ms per insert
+
+-- Now with HNSW index
+CREATE INDEX docs_hnsw_idx ON docs USING hnsw (embedding vector_l2_ops);
+
+INSERT INTO docs (content, embedding) 
+SELECT 'test', embedding FROM docs WHERE id = 1;
+-- Expected: ~10-50ms per insert (10-50x slower!)
+
+-- With IVFFlat index
+DROP INDEX docs_hnsw_idx;
+CREATE INDEX docs_ivfflat_idx ON docs USING ivfflat (embedding vector_l2_ops) WITH (lists = 200);
+
+INSERT INTO docs (content, embedding) 
+SELECT 'test', embedding FROM docs WHERE id = 1;
+-- Expected: ~2-10ms per insert (2-10x slower)
+
+\timing off
+```
+
+**Write Performance Impact:**
+
+| Scenario | Insert Time | Slowdown |
+|----------|-------------|----------|
+| No index | ~1-2ms | baseline |
+| IVFFlat | ~2-10ms | 2-10x slower |
+| HNSW | ~10-50ms | 10-50x slower |
+
+**Key insight**: HNSW has significant write overhead due to graph maintenance. For write-heavy workloads, consider:
+- Batch inserts without index, then rebuild
+- Use IVFFlat instead
+- Separate embedding table to avoid index updates on content changes
+
 ### Pitfall 3: IVFFlat requires ANALYZE
 
 ```sql
@@ -914,10 +995,10 @@ ANALYZE docs;
 SHOW maintenance_work_mem;
 
 -- If you get "memory required" errors during index creation:
-SET maintenance_work_mem = '256MB';  -- Or higher for large datasets
+SET maintenance_work_mem = '512MB';  -- Or higher for large datasets
 
 -- For permanent change, edit postgresql.conf:
--- maintenance_work_mem = 256MB
+-- maintenance_work_mem = 512MB
 ```
 
 **Why this matters:**
@@ -925,6 +1006,7 @@ SET maintenance_work_mem = '256MB';  -- Or higher for large datasets
 - IVFFlat: k-means clustering loads vectors into memory
 - HNSW: graph construction needs memory for candidates
 - Default 64MB is often too small for vector workloads
+- For 50k rows with 1024d: Recommend 512MB-1GB
 - Recommendation: 256MB-1GB for vector indexes
 
 ### Pitfall 5: HNSW index build is slow for bulk loads
@@ -977,26 +1059,72 @@ LIMIT 10;
 - Updates duplicate TOAST rows (bloat)
 
 ✅ **Bigger vectors hurt reads, writes, bloat**
-- Our demo uses 1536d = ~6KB per vector (realistic for OpenAI ada-002)
-- Smaller models: 384d = ~1.5KB (4x smaller, stays inline!)
-- Consider smaller models when possible (384d, 768d) for better performance
+- Our demo uses 1024d = ~4KB per vector (realistic for BGE-large)
+- Smaller models: 384d = ~1.5KB (stays inline!)
+- Consider smaller models when possible (384d, 512d) for better performance
 
 ✅ **IVFFlat → fast, approximate, good for large batches**
 - Requires ANALYZE
 - Tune with `ivfflat.probes`
+- Use lists = sqrt(rows)
 
 ✅ **HNSW → high recall, great latency, slower writes**
 - Best for production
 - Tune with `hnsw.ef_search`
+- Higher build cost but better query performance
 
 ✅ **Data modelling matters more than the index**
 - Separate tables for versioning
 - Cluster for locality
 - Choose right dimensions
 
+✅ **Always use LIMIT with vector queries**
+- Without LIMIT, ANN indexes won't be used
+- LIMIT enables top-K search optimization
+
 ✅ **Use EXPLAIN ANALYZE — it will tell you everything**
 
 ✅ **Postgres is absolutely capable of semantic search at production scale**
+
+---
+
+## 📋 Production Checklist
+
+Before deploying pgvector to production, verify:
+
+**Index Strategy:**
+- [ ] Use HNSW for user-facing queries (low latency, high recall)
+- [ ] Use IVFFlat for batch/analytics workloads (faster build, lower memory)
+- [ ] Create indexes AFTER bulk loading data (not during inserts)
+- [ ] Run ANALYZE after bulk inserts (required for IVFFlat)
+
+**Configuration:**
+- [ ] Set `maintenance_work_mem = 512MB` or higher (for index builds)
+- [ ] Set `shared_buffers` appropriately (25% of RAM is common)
+- [ ] Configure connection pooling (pgBouncer recommended)
+
+**Data Modeling:**
+- [ ] Separate embedding table if content updates frequently
+- [ ] Use smaller embedding models when possible (384d, 512d)
+- [ ] Add content_hash column to avoid re-embedding unchanged content
+- [ ] Consider partitioning for very large datasets (>10M rows)
+
+**Monitoring:**
+- [ ] Monitor TOAST bloat: `pg_stat_user_tables` (n_dead_tup)
+- [ ] Set up regular VACUUM schedule (autovacuum may not be enough)
+- [ ] Track query performance: `pg_stat_statements`
+- [ ] Monitor index usage: `pg_stat_user_indexes`
+
+**Query Patterns:**
+- [ ] Always use LIMIT with vector queries
+- [ ] Use appropriate distance metric (cosine for text, L2 for images)
+- [ ] Tune probes/ef_search based on recall requirements
+- [ ] Cache frequently accessed embeddings in application layer
+
+**Backup & Recovery:**
+- [ ] Regular backups (pg_dump or physical backups)
+- [ ] Test restore procedures
+- [ ] Document index rebuild procedures (can take hours for large datasets)
 
 ---
 

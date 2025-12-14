@@ -18,7 +18,7 @@ date: "December 19, 2025"
 
 ## 2. Storage Deep Dive
 - Where vectors live in Postgres
-- TOAST behavior (1536d = 6KB!)
+- TOAST behavior (1024d = 4KB!)
 - Why size matters
 
 ## 3. Search Without Indexes
@@ -31,7 +31,7 @@ date: "December 19, 2025"
 ## 4. ANN Indexes
 - IVFFlat: k-means clustering
 - HNSW: hierarchical graphs
-- 63-70x speedup!
+- 50-150x speedup!
 
 ## 5. Production Reality
 - MVCC bloat problem
@@ -124,7 +124,9 @@ FROM documents LIMIT 3;
 
 <!-- pause -->
 
-**Most common:** Cosine `<=>` (works best for embeddings)
+**Most common:** Cosine `<=>` (works best for text embeddings)
+
+**Remember:** Lower distance = more similar!
 
 <!-- end_slide -->
 
@@ -144,7 +146,7 @@ LIMIT 5;
 
 <!-- pause -->
 
-**Remember:** Lower distance = more similar!
+**Key:** Lower distance = more similar (always use LIMIT!)
 
 <!-- end_slide -->
 
@@ -161,20 +163,18 @@ LIMIT 5;
 # Step 1: Create the Table
 
 ```sql
-
-
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS docs (
     id serial PRIMARY KEY,
     content text,
-    embedding vector(1536)
+    embedding vector(1024)
 );
 ```
 
 <!-- pause -->
 
-**Note:** 1536 dimensions to demonstrate TOAST behavior (embeddings > 2KB)
+**Note:** 1024 dimensions to demonstrate TOAST behavior (embeddings > 2KB)
 
 <!-- end_slide -->
 
@@ -189,7 +189,7 @@ python generate_demo_embeddings.py
 
 **This will:**
 - Generate realistic random text using Faker
-- Create 1536-dimensional embeddings (to demonstrate TOAST!)
+- Create 1024-dimensional embeddings (to demonstrate TOAST!)
 - Insert 50k rows into `docs` table
 - Takes ~10-15 minutes
 
@@ -220,7 +220,7 @@ FROM docs LIMIT 3;
 
 <!-- pause -->
 
-**Expected:** ~6 KB per 1536-dim embedding
+**Expected:** ~4 KB per 1024-dim embedding
 
 <!-- end_slide -->
 
@@ -241,20 +241,20 @@ WHERE relname = 'docs';
 
 <!-- pause -->
 
-**Expected results (50k docs with 1536d):**
-- Heap size: ~100 MB (metadata, small values)
-- TOAST size: ~300 MB (most embeddings here!)
-- Total: ~400 MB
+**Expected results (50k docs with 1024d):**
+- Heap size: ~50-60 MB (metadata, small values)
+- TOAST size: ~180-200 MB (most embeddings here!)
+- Total: ~250 MB
 
 <!-- pause -->
 
-**Key insight:** 1536d embeddings go to TOAST (> 2KB threshold) ✗
+**Key insight:** 1024d embeddings go to TOAST (> 2KB threshold) ✓
 
 <!-- end_slide -->
 
-# Chapter 4: What About Larger Embeddings?
+# Chapter 4: What About Embedding Sizes?
 
-**We saw TOAST in action with 1536d. But what if we used smaller embeddings?**
+**We saw TOAST in action with 1024d. But what if we used smaller embeddings?**
 
 <!-- pause -->
 
@@ -264,17 +264,17 @@ WHERE relname = 'docs';
 
 <!-- column: 0 -->
 
-**Our deep dive demo (50k docs, 1536d):**
+**Our demo (50k docs, 1024d):**
 ```
-Heap:  ███░░░░░░░░░ ~100 MB
-TOAST: █████████░░░ ~300 MB
+Heap:  ████░░░░░░░░ ~50 MB
+TOAST: ████████░░░░ ~200 MB
 ```
-✗ Most embeddings in TOAST (demonstrates the problem!)
+✓ Most embeddings in TOAST (demonstrates the problem!)
 
 **If we used 384d instead:**
 ```
-Heap:  ████████████ ~100 MB
-TOAST: ░░░░░░░░░░░░  ~8 KB
+Heap:  ████████████ ~50 MB
+TOAST: ░░░░░░░░░░░░  ~0 MB
 ```
 ✓ Embeddings stay in heap (much faster!)
 
@@ -291,9 +291,9 @@ TOAST = extra I/O
 
 **Recommendation:**
 Use smaller models when possible!
-- 384d: MiniLM, E5-small
-- 768d: MPNet, E5-base
-- Avoid 1536d unless necessary
+- 384d: MiniLM, E5-small (~1.5 KB)
+- 512d: E5-base (~2 KB, borderline)
+- 1024d: BGE-large (~4 KB, TOASTed)
 
 <!-- end_slide -->
 
@@ -311,7 +311,7 @@ Main table = Your desk
 TOAST = Filing cabinet in another room
 
 Small items (384d) → Stay on desk
-Large items (1536d) → Go to filing cabinet
+Large items (1024d) → Go to filing cabinet
 ```
 
 <!-- pause -->
@@ -337,8 +337,8 @@ FROM docs LIMIT 1;
 
 **The Problem:**
 - Postgres moves values > 2 KB to TOAST tables
-- Our 1536d vectors = ~6 KB each
-- **Result:** 80%+ of data in TOAST
+- Our 1024d vectors = ~4 KB each
+- **Result:** 75-80% of data in TOAST
 - **Impact:** Extra I/O on every read
 
 <!-- end_slide -->
@@ -571,21 +571,21 @@ IVFFlat:         Jump to similar clusters
 # Lets see IVFFlat Index in action
 
 ```sql
-SET maintenance_work_mem = '256MB';
+SET maintenance_work_mem = '512MB';
 
 CREATE INDEX docs_ivfflat_idx 
 ON docs USING ivfflat (embedding vector_l2_ops)
-WITH (lists = 100);
+WITH (lists = 200);
 
 ANALYZE docs;
 ```
 
 <!-- pause -->
 
-**How it works:**
-- k-means clustering
-- Creates 100 clusters (lists = sqrt(50k) ≈ 100)
-- Query searches nearest cluster(s)
+**Parameters:**
+- lists = 200 (≈ sqrt(50k) ≈ 224)
+- Build time: ~30-60 seconds
+- Index size: ~20-30 MB
 
 <!-- end_slide -->
 
@@ -609,9 +609,9 @@ LIMIT 5;
 
 **Result:**
 - Index Scan using docs_ivfflat_idx
-- ~1-2ms (vs 100ms!)
-- 241 buffers (vs 60,000!)
-- **63x faster**
+- ~10-20ms (vs 500-2000ms!)
+- ~1,000 buffers (vs ~300,000!)
+- **50-100x faster**
 
 <!-- end_slide -->
 
@@ -638,7 +638,7 @@ Hierarchical Navigable Small World
 
 # HNSW: Key Differences
 
-**Key differences from IVFFlat:**
+**How it works:**
 - Hierarchical graph with multiple layers
 - Navigates from sparse (top) to dense (bottom) layers
 - Higher recall (~99% vs ~95%)
@@ -796,13 +796,40 @@ WITH (m = 16, ef_construction = 200);
 
 | Method   | Time  | Buffers | Speedup | Accuracy    |
 |----------|-------|---------|---------|-------------|
-| Seq Scan | 101ms | 60,205  | 1x      | Perfect     |
-| IVFFlat  | 1.6ms | 241     | 63x     | Approximate |
-| HNSW     | 1-2ms | ~200    | 70x     | High        |
+| Seq Scan | 500-2000ms | ~300,000  | 1x      | Perfect     |
+| IVFFlat  | 10-20ms | ~1,000     | 50-100x     | Approximate |
+| HNSW     | 5-15ms | ~500    | 70-150x     | High        |
 
 <!-- pause -->
 
-**Key:** 250x less I/O with indexes!
+**Key:** 300x less I/O with indexes!
+
+**Build time:** IVFFlat ~30-60s, HNSW ~2-5min
+
+<!-- end_slide -->
+
+# ⚠️ CRITICAL: Always Use LIMIT!
+
+**Without LIMIT, Postgres won't use ANN indexes!**
+
+<!-- pause -->
+
+```sql
+-- BAD: No LIMIT = Sequential scan (even with indexes!)
+SELECT * FROM docs 
+ORDER BY embedding <-> '[...]';
+
+-- GOOD: LIMIT = Uses ANN index
+SELECT * FROM docs 
+ORDER BY embedding <-> '[...]' 
+LIMIT 10;
+```
+
+<!-- pause -->
+
+**Why?** Without LIMIT, Postgres must sort ALL results → can't use approximate indexes.
+
+**With LIMIT:** Postgres knows you want top-K → uses ANN index for fast approximate search.
 
 <!-- end_slide -->
 
@@ -834,9 +861,9 @@ Multi-Version Concurrency Control - Postgres's way of handling concurrent transa
 ```
 UPDATE docs SET metadata = '{"views": 100}' WHERE id = 1;
 ```
-- Postgres copies the ENTIRE row (including 6KB embedding!)
-- Old 6KB embedding becomes "dead tuple" in TOAST
-- Do this 1000 times = 6 GB of dead data
+- Postgres copies the ENTIRE row (including 4KB embedding!)
+- Old 4KB embedding becomes "dead tuple" in TOAST
+- Do this 5000 times = 20 GB of dead data
 
 <!-- pause -->
 
@@ -855,7 +882,7 @@ UPDATE docs SET metadata = '{"views": 100}' WHERE id = 1;
 SELECT 
   pg_size_pretty(pg_total_relation_size('docs')) 
   AS total_size;
--- Expected: ~400 MB
+-- Expected: ~250 MB
 
 -- Updates create dead tuples
 UPDATE docs 
@@ -866,7 +893,7 @@ WHERE id <= 5000;
 SELECT 
   pg_size_pretty(pg_total_relation_size('docs')) 
   AS total_size;
--- Expected: ~460 MB (10% of data updated!)
+-- Expected: ~275 MB (10% of data updated!)
 ```
 
 <!-- column: 1 -->
@@ -883,7 +910,7 @@ FROM pg_stat_user_tables
 WHERE relname = 'docs';
 
 -- Expected:
--- live: 50000, dead: 5000, dead_pct: 10%
+-- live: 50000, dead: 5000, dead_pct: 9%
 
 -- Clean up
 VACUUM docs;
@@ -892,14 +919,14 @@ VACUUM docs;
 SELECT 
   pg_size_pretty(pg_total_relation_size('docs')) 
   AS total_size;
--- Back to ~400 MB
+-- Back to ~250 MB
 ```
 
 <!-- reset_layout -->
 
 <!-- pause -->
 
-**Problem:** Each update duplicates ~6KB in TOAST
+**Problem:** Each update duplicates ~4KB in TOAST
 
 <!-- end_slide -->
 
@@ -917,7 +944,7 @@ SELECT
 
 **Separate embedding table**
 
-**The Problem:** Updating document metadata duplicates 6KB embeddings!
+**The Problem:** Updating document metadata duplicates 4KB embeddings!
 
 ```sql
 CREATE TABLE documents (
@@ -929,7 +956,7 @@ CREATE TABLE documents (
 
 CREATE TABLE embeddings (
   doc_id int REFERENCES documents(id),
-  embedding vector(1536),
+  embedding vector(1024),
   content_hash text
 );
 
@@ -955,8 +982,8 @@ WHERE id = 1;
 **Use smaller models**
 
 - 384d = 1.5 KB (stays inline!)
-- 768d = 3 KB (TOASTed)
-- 1536d = 6 KB (TOASTed)
+- 512d = 2 KB (borderline)
+- 1024d = 4 KB (TOASTed, our demo)
 
 **Smaller = less TOAST, faster queries**
 
@@ -966,10 +993,10 @@ WHERE id = 1;
 
 ```sql
 -- In postgresql.conf
-maintenance_work_mem = 256MB
+maintenance_work_mem = 512MB
 ```
 
-**Why:** Vector indexes need memory to build
+**Why:** Vector indexes need memory to build (especially for 50k+ rows)
 
 <!-- end_slide -->
 
@@ -1012,6 +1039,34 @@ CREATE INDEX AFTER; -- One-time cost
 <!-- pause -->
 
 **Best practice:** Bulk load first, then index!
+
+<!-- end_slide -->
+
+# Production Tips #5b: Write Performance
+
+**Indexes slow down writes!**
+
+<!-- pause -->
+
+| Scenario | Insert Time | Slowdown |
+|----------|-------------|----------|
+| No index | ~1-2ms | baseline |
+| IVFFlat | ~2-10ms | 2-10x slower |
+| HNSW | ~10-50ms | 10-50x slower |
+
+<!-- pause -->
+
+**Why HNSW is slower:**
+- Must update graph structure
+- Rebalance connections
+- Maintain hierarchical layers
+
+<!-- pause -->
+
+**For write-heavy workloads:**
+- Batch inserts without index, then rebuild
+- Use IVFFlat instead of HNSW
+- Separate embedding table
 
 <!-- end_slide -->
 
@@ -1101,17 +1156,77 @@ LIMIT 10;
 
 <!-- end_slide -->
 
+# When to Use Alternatives in PostgreSQL
+
+**pgvector is great, but not always the answer:**
+
+<!-- pause -->
+
+**Use PostgreSQL Full-Text Search (FTS) when:**
+- ✅ Exact keyword matching needed
+- ✅ Boolean queries (AND, OR, NOT)
+- ✅ Phrase matching required
+- ✅ Language-specific stemming needed
+
+<!-- pause -->
+
+**Use sequential scan when:**
+- ✅ < 1,000 documents (brute force is fine)
+- ✅ One-time queries (index build cost not worth it)
+- ✅ 100% accuracy required (no approximation)
+
+<!-- pause -->
+
+**Use external vector DB when:**
+- ✅ > 10M vectors (specialized systems scale better)
+- ✅ Need advanced features (filtering, hybrid search)
+- ✅ Multi-tenancy with isolation
+
+<!-- pause -->
+
+**TL;DR:** pgvector is perfect for 1k-10M vectors with PostgreSQL
+
+<!-- end_slide -->
+
+# Production Checklist
+
+**Before deploying to production:**
+
+<!-- pause -->
+
+**Index Strategy:**
+- [ ] Use HNSW for user-facing queries
+- [ ] Create indexes AFTER bulk loading
+- [ ] Run ANALYZE after bulk inserts
+
+<!-- pause -->
+
+**Configuration:**
+- [ ] Set maintenance_work_mem = 512MB+
+- [ ] Configure connection pooling (pgBouncer)
+
+<!-- pause -->
+
+**Monitoring:**
+- [ ] Monitor TOAST bloat (pg_stat_user_tables)
+- [ ] Set up regular VACUUM schedule
+- [ ] Track query performance (pg_stat_statements)
+
+<!-- end_slide -->
+
 # Key Takeaways
 
 ✅ Vectors > 2KB go to TOAST (extra I/O)
 
-✅ ANN indexes give 50-100x speedup
+✅ ANN indexes give 50-150x speedup
 
-✅ HNSW is best for production
+✅ HNSW is best for production (high recall, low latency)
 
-✅ Smaller embeddings = better performance
+✅ Smaller embeddings = better performance (384d > 1024d)
 
 ✅ Separate tables for frequent updates
+
+✅ **Always use LIMIT** with vector queries
 
 ✅ Always use EXPLAIN ANALYZE
 

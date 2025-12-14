@@ -10,7 +10,7 @@ python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env  # Edit with your PostgreSQL credentials
 
-# Generate demo data (10k docs, 1536d embeddings, ~5-10 min)
+# Generate demo data (50k docs, 1024d embeddings, ~10-15 min)
 python scripts/generate_demo_embeddings.py
 
 # Run presentation
@@ -34,4 +34,3 @@ Create `.env` file:
 ```bash
 DATABASE_URL=postgres://user:password@localhost:5432/dbname
 ```
-

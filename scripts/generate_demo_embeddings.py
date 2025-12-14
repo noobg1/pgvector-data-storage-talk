@@ -2,15 +2,15 @@
 """
 Generate real embeddings with meaningful text content for pgvector demo.
 This creates 50,000 diverse documents with realistic random text.
-Uses 1536 dimensions to demonstrate TOAST behavior.
+Uses 1024 dimensions from BGE-large model to demonstrate TOAST behavior.
 """
 
 import psycopg2
 from sentence_transformers import SentenceTransformer
 import random
-import numpy as np
 import os
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 # Load environment variables
 load_dotenv()
@@ -80,15 +80,15 @@ def main():
         CREATE TABLE docs (
             id serial PRIMARY KEY,
             content text,
-            embedding vector(1536)
+            embedding vector(1024)
         );
     """)
     conn.commit()
     
     # Load model
     print("3. Loading sentence transformer model (this may take a moment)...")
-    print("   Model: BAAI/bge-large-en-v1.5 (1024 dims)")
-    print("   Will be padded to 1536 dimensions to demonstrate TOAST")
+    print("   Model: BAAI/bge-large-en-v1.5 (1024 dimensions)")
+    print("   This model naturally outputs 1024d vectors (>2KB, will be TOASTed)")
     model = SentenceTransformer('BAAI/bge-large-en-v1.5')
     
     # Generate and insert documents
@@ -100,7 +100,7 @@ def main():
     total_docs = 50000
     batches = total_docs // batch_size
     
-    for batch_num in range(batches):
+    for batch_num in tqdm(range(batches), desc="Generating embeddings", unit="batch"):
         texts = []
         
         # Generate batch of diverse texts
@@ -109,30 +109,16 @@ def main():
             texts.append(text)
         
         # Generate embeddings for batch (1024 dimensions from model)
-        embeddings_1024 = model.encode(texts, show_progress_bar=False)
-        
-        # Pad to 1536 dimensions to demonstrate TOAST behavior
-        # This creates ~6KB vectors that will be TOASTed
-        embeddings_1536 = []
-        for emb in embeddings_1024:
-            # Pad with random noise to reach 1536 dimensions
-            padding = np.random.randn(1536 - 1024).astype(np.float32) * 0.01
-            padded = np.concatenate([emb, padding])
-            embeddings_1536.append(padded)
+        embeddings = model.encode(texts, show_progress_bar=False)
         
         # Insert batch
-        for text, embedding in zip(texts, embeddings_1536):
+        for text, embedding in zip(texts, embeddings):
             cur.execute(
                 "INSERT INTO docs (content, embedding) VALUES (%s, %s)",
                 (text, embedding.tolist())
             )
         
         conn.commit()
-        
-        # Progress update every 10 batches
-        if (batch_num + 1) % 10 == 0:
-            progress = ((batch_num + 1) / batches) * 100
-            print(f"   Progress: {progress:.1f}% ({(batch_num + 1) * batch_size:,} docs)")
     
     print(f"\n✅ Successfully inserted {total_docs:,} documents!")
     
@@ -175,8 +161,8 @@ def main():
     print("✨ Demo data ready! You can now run the SQL commands from")
     print("   pgvector_deep_dive_demo.md")
     print("\n💡 Key points:")
-    print("   - 10,000 diverse documents")
-    print("   - 1536 dimensions (~6 KB per vector)")
+    print("   - 50,000 diverse documents")
+    print("   - 1024 dimensions (~4 KB per vector)")
     print("   - Vectors are TOASTed (> 2KB threshold)")
     print("   - Realistic random text content via Faker")
     print("=" * 60)
