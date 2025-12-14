@@ -1,2 +1,5 @@
 psycopg2-binary
 sentence-transformers
+faker
+python-dotenv
+numpy
