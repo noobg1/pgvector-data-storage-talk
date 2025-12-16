@@ -80,7 +80,8 @@ def main():
         CREATE TABLE docs (
             id serial PRIMARY KEY,
             content text,
-            embedding vector(1024)
+            embedding vector(1024),
+            metadata jsonb DEFAULT '{}'::jsonb
         );
     """)
     conn.commit()

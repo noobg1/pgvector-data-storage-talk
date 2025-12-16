@@ -55,44 +55,95 @@ date: "December 19, 2025"
 
 **Key insight:** Similar meanings → Similar numbers!
 
+*It's like teaching your database that "pizza" and "delicious" are besties* 🍕❤️
+
+<!-- pause -->
+
+![](images/gifs/mind-blown.gif)
+
+**In other words:** We're teaching computers that "pizza" and "great" go together. 🍕
+
+<!-- pause -->
+
+
 <!-- end_slide -->
 
 # 🎯 Let's See It In Action
 
-```bash
-python scripts/demo.py compare
-```
-
-<!-- end_slide -->
-
-# Now Let's Store Embeddings in Postgres
+**First: How similar are two pieces of text?**
 
 ```bash
-python scripts/demo.py seed
-```
-
-<!-- end_slide -->
-
-# Inspect the Data in psql
-
-```sql
--- See all documents
-SELECT id, content FROM documents;
-
--- Check embedding dimensions
-SELECT id, content, 
-       array_length(embedding::float4[], 1) AS dimensions
-FROM documents LIMIT 3;
-
--- Peek at first 5 numbers of embedding
-SELECT id, content,
-       (embedding::float4[])[1:5] AS first_5_values
-FROM documents LIMIT 3;
+python demo.py compare
 ```
 
 <!-- pause -->
 
-**What did we do?** Text → embeddings → PostgreSQL
+*Try: "I love pizza" vs "Pizza is great"*
+
+<!-- end_slide -->
+
+# Now Let's Store These Embeddings
+
+**Step 1: Add some texts to Postgres**
+
+```bash
+python demo.py seed
+```
+
+<!-- pause -->
+
+*Enter a few sentences about different topics*
+
+<!-- end_slide -->
+
+# Search Your Data
+
+**Step 2: Find similar content**
+
+```bash
+python demo.py search
+```
+
+<!-- pause -->
+
+*Query: "italian food" → finds your pizza texts!*
+
+<!-- end_slide -->
+
+# What Just Happened? Let's Look Inside
+
+<!-- column_layout: [1, 1] -->
+
+<!-- column: 0 -->
+
+**Postgres stored your embeddings as vectors**
+
+```sql
+-- See all documents
+SELECT id, content FROM demo;
+
+-- Check embedding dimensions
+SELECT id, content, 
+       array_length(embedding::float4[], 1) AS dimensions
+FROM demo LIMIT 3;
+
+-- Peek at first 5 numbers
+SELECT id, content,
+       (embedding::float4[])[1:5] AS first_5_values
+FROM demo LIMIT 3;
+```
+
+<!-- column: 1 -->
+
+![](images/gifs/measuring.gif)
+
+**The magic:** Text → 384 numbers → Semantic search ✨
+
+<!-- pause -->
+
+Why higher dimenions matter❓
+
+<!-- reset_layout -->
 
 
 <!-- end_slide -->
@@ -105,15 +156,25 @@ FROM documents LIMIT 3;
 
 **We need distance functions!**
 
+<!-- pause -->
+
+<!-- column_layout: [1] -->
+
+<!-- column: 0 -->
+
+![](images/gifs/compare-vectors.gif)
+
+<!-- reset_layout -->
+
 <!-- end_slide -->
 
 # Three Distance Operators
 
-| Operator | Name | Formula | Interpretation |
-|----------|------|---------|----------------|
-| `<->` | L2 (Euclidean) | √(Σ(a-b)²) | Lower = closer |
-| `<=>` | Cosine | 1 - (a·b)/(‖a‖‖b‖) | Lower = more similar |
-| `<#>` | Inner Product | -(a·b) | Lower = better aligned |
+| Operator | Name | Formula | Use When |
+|----------|------|---------|----------|
+| `<->` | L2 (Euclidean) | √(Σ(a-b)²) | Absolute distance matters (images) |
+| `<=>` | Cosine | 1 - (a·b)/(‖a‖‖b‖) | Direction matters (text, most common) |
+| `<#>` | Inner Product | -(a·b) | Pre-normalized vectors |
 
 <!-- pause -->
 
@@ -126,7 +187,8 @@ FROM documents LIMIT 3;
 
 **Most common:** Cosine `<=>` (works best for text embeddings)
 
-**Remember:** Lower distance = more similar!
+*Think of it as three ways to measure how much your vectors "vibe" together* ✨
+
 
 <!-- end_slide -->
 
@@ -134,12 +196,15 @@ FROM documents LIMIT 3;
 
 ```sql
 -- Find similar docs using cosine distance
-SELECT 
+SELECT
   content,
-  embedding <=> 
-    (SELECT embedding FROM documents WHERE id = 1) 
-  AS distance
-FROM documents
+  embedding <=> (
+    SELECT embedding
+    FROM demo
+    WHERE content = 'Inflation is high'
+    LIMIT 1
+  ) AS distance
+FROM demo
 ORDER BY distance
 LIMIT 5;
 ```
@@ -147,6 +212,8 @@ LIMIT 5;
 <!-- pause -->
 
 **Key:** Lower distance = more similar (always use LIMIT!)
+
+Cosine Distance varies from 0 to 2 and the cosine similarity angle varies from -1 to 1
 
 <!-- end_slide -->
 
@@ -207,12 +274,12 @@ SELECT COUNT(*) FROM docs;
 -- Expected: 50000
 
 -- See sample content
-SELECT id, content FROM docs LIMIT 3;
+SELECT id, LEFT(content, 50) AS content_trunc FROM docs LIMIT 3;
 
 -- Check embedding size
 SELECT 
     id, 
-    content,
+    LEFT(content, 50) AS content_trunc,
     pg_column_size(embedding) AS embedding_bytes,
     array_length(embedding::float4[], 1) AS dimensions
 FROM docs LIMIT 3;
@@ -227,24 +294,56 @@ FROM docs LIMIT 3;
 # Step 4: Where Is the Data Stored?
 
 ```sql
--- Check storage breakdown
 SELECT 
-    pg_size_pretty(pg_relation_size('docs')) AS heap_size,
-    pg_size_pretty(pg_total_relation_size('docs')) AS total_size;
-
--- Check TOAST table size
-SELECT 
-    pg_size_pretty(pg_relation_size(reltoastrelid)) AS toast_size
-FROM pg_class 
-WHERE relname = 'docs';
+    pg_size_pretty(pg_relation_size('docs')) AS heap_size;
 ```
 
 <!-- pause -->
 
-**Expected results (50k docs with 1024d):**
-- Heap size: ~50-60 MB (metadata, small values)
-- TOAST size: ~180-200 MB (most embeddings here!)
-- Total: ~250 MB
+**Let's do the math:**
+- 50,000 docs × 1024 dimensions × 4 bytes = **200 MB**
+
+<!-- pause -->
+
+**But we only see:**
+- Heap size: ~11 MB
+
+<!-- pause -->
+
+**Wait... where's the other ~189 MB?** 🤔
+
+![](images/gifs/where.gif)
+
+<!-- end_slide -->
+
+# The Mystery Revealed: TOAST!
+
+```sql
+-- Check individual row and embedding size
+SELECT 
+    id,
+    pg_column_size(embedding) AS embedding_bytes,
+    pg_column_size(docs.*) AS row_bytes
+FROM docs 
+LIMIT 3;
+
+-- Check TOAST table size
+SELECT 
+    c.relname AS table_name,
+    pg_size_pretty(pg_relation_size(c.oid)) AS heap_size,
+    pg_size_pretty(pg_relation_size(c.reltoastrelid)) AS toast_size,
+    pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size
+FROM pg_class c
+WHERE c.relname = 'docs';
+```
+
+<!-- pause -->
+
+**Aha! 💡**
+- Each embedding: ~4,100 bytes (> 2KB threshold!)
+- Heap size: ~11 MB (just row headers)
+- TOAST size: ~260 MB (94% of data is here!)
+- Total: ~276 MB
 
 <!-- pause -->
 
@@ -295,6 +394,11 @@ Use smaller models when possible!
 - 512d: E5-base (~2 KB, borderline)
 - 1024d: BGE-large (~4 KB, TOASTed)
 
+*Bigger isn't always better. Sometimes it's just... slower* 🦥
+
+
+![](images/gifs/snail.gif)
+
 <!-- end_slide -->
 
 # What is TOAST?
@@ -302,6 +406,12 @@ Use smaller models when possible!
 ```
 TOAST = "The Oversized-Attribute Storage Technique"
 ```
+
+<!-- pause -->
+
+**Not this kind of toast:** 🍞
+
+![](images/gifs/toast.gif)
 
 <!-- pause -->
 
@@ -317,6 +427,12 @@ Large items (1024d) → Go to filing cabinet
 <!-- pause -->
 
 **Impact:** TOAST = extra I/O on every read!
+
+*It's like getting up to fetch a file every single time. Annoying, right?*
+
+<!-- pause -->
+
+![](images/gifs/walking.gif)
 
 <!-- end_slide -->
 
@@ -352,10 +468,13 @@ FROM docs LIMIT 1;
 **First, let's see how it works WITHOUT any indexes...**
 
 ```sql
--- Find similar documents to doc #1
-SELECT id, content,
+-- Get a random doc and check the content
+SELECT content FROM docs WHERE id = 97;
+
+-- Find similar docs
+SELECT id, LEFT(content, 150) as contect_trunc,
        embedding <-> (
-         SELECT embedding FROM docs WHERE id = 1
+         SELECT embedding FROM docs WHERE id = 97
        ) AS distance
 FROM docs
 ORDER BY distance
@@ -365,6 +484,12 @@ LIMIT 5;
 <!-- pause -->
 
 **Notice:** Results are semantically similar! But how fast is it?
+
+*Postgres checking every single row like:*
+
+*"Is this the one? No. Is THIS the one? No..."*
+
+![](images/gifs/flipping-papers.gif)
 
 <!-- end_slide -->
 
@@ -414,6 +539,20 @@ LIMIT 5;
 
 Why Approximate? Because exact search is too slow!
 
+<!-- pause -->
+
+![](images/gifs/exact-search-slow.png)
+
+<!-- pause -->
+
+*This is fine.* 🔥☕
+
+![](images/gifs/this-is-fine.gif)
+
+
+<!-- pause -->
+
+
 
 <!-- end_slide -->
 
@@ -421,13 +560,13 @@ Why Approximate? Because exact search is too slow!
 
 **Sequential scan is too slow. We need indexes!**
 
-<!-- pause -->
-
 **But how do you index high-dimensional vectors?**
 
+![](images/gifs/interstellar.gif)
+
 <!-- pause -->
 
-Let's understand search methods first...
+Let's understand search methods first... apart from Btree variants used in for non vector indexing
 
 <!-- end_slide -->
 
@@ -472,7 +611,6 @@ Doc6: "Neural networks process data"
 
 Checked: **6/6 docs (100%)**
 
-<!-- pause -->
 
 **Problem:** Must check EVERY document!
 
@@ -522,6 +660,12 @@ Checked: **2/6 docs (33%)**
 2. K-means clustering groups similar vectors
 3. Query searches only nearest cluster(s)
 
+
+![](images/gifs/clustering.gif)
+
+*It's like organizing your closet by color. Sure, you might miss that one blue shirt, but you'll find A blue shirt fast!* 👕
+
+
 <!-- end_slide -->
 
 # IVFFlat Clustering Visualization
@@ -532,23 +676,80 @@ Checked: **2/6 docs (33%)**
 
 <!-- end_slide -->
 
+# IVFFlat: Centroids Created
+
+**After k-means clustering, we have centroids (cluster centers):**
+
+```
+
+Vector Space (2D projection):
+    1.0 │
+        │  ●Doc1                   ●Doc5
+    0.8 │   ⭐A            
+        │   [0.15,0.85]             ●Doc4
+    0.6 │   ●Doc2               ⭐ B[0.70,0.75]
+        │    ●Doc3.          ●Doc6   
+    0.4 │                           
+        │
+    0.2 │
+        │
+    0.0 └─────────────────────────────
+        0.0   0.2   0.4   0.6   0.8
+
+Cluster A: [Doc1, Doc2, Doc3] → Centroid A: [0.15, 0.85]
+Cluster B: [Doc4, Doc5, Doc6] → Centroid B: [0.70, 0.75]
+```
+
+<!-- pause -->
+
+**Now let's see how search works...**
+
+<!-- end_slide -->
+
 # IVFFlat Search Process
+
+**Query arrives: "machine learning algorithms" → [0.72, 0.82]**
+
+```
+Vector Space (2D projection):
+    1.0 │
+        │  ●Doc1                         ●Doc5
+    0.8 │   ⭐A            Query 🟢 [0.72,0.82]
+        │   [0.15,0.85]                  ●Doc4
+    0.6 │   ●Doc2              ⭐ B[0.70,0.75]
+        │    ●Doc3.          ●Doc6   
+    0.4 │                           
+        │
+    0.2 │
+        │
+    0.0 └─────────────────────────────
+        0.0   0.2   0.4   0.6   0.8
+```
+
+<!-- pause -->
+
+**Which centroid is closest to the query?**
+
+<!-- end_slide -->
+
+# IVFFlat Search Process: Step by Step
 
 ```
 Query: "machine learning algorithms"
-  → Embedding: [0.72, 0.82, 0.08]
+  → Embedding: [0.72, 0.82]  (2D projection)
   ↓
 1. Find nearest centroid(s):
-   Distance to A: 0.95  ✗
-   Distance to B: 0.03  ✓ (nprobe=1)
+   Centroid A: [0.15, 0.25]
+     Distance to A: 0.95  ✗
+   
+   Centroid B: [0.70, 0.80]
+     Distance to B: 0.03  ✓ (nprobe=1)
   ↓
 2. Scan ONLY Centroid B cluster:
    Doc4: distance 0.02  ✓
    Doc5: distance 0.04  ✓
    Doc6: distance 0.08  ✗
 ```
-
-Checked: **3/6 docs (50%)**
 
 <!-- end_slide -->
 
@@ -562,7 +763,7 @@ TF-IDF:          Jump to exact matches
                   ████████░░░░░░░░░░░░ 33%
 
 IVFFlat:         Jump to similar clusters
-                  ██████████░░░░░░░░░░ 50%
+                  ███░░░░░░░░░░░░░░░░░ 20%
                   (trades accuracy for speed)
 ```
 
@@ -579,13 +780,11 @@ WITH (lists = 200);
 
 ANALYZE docs;
 ```
-
 <!-- pause -->
 
 **Parameters:**
-- lists = 200 (≈ sqrt(50k) ≈ 224)
-- Build time: ~30-60 seconds
-- Index size: ~20-30 MB
+- lists = 200 (≈ sqrt(50k) ≈ 224) - So 200 clusters
+- vector_l2_ops - distance based (euclidean) - `<->` operator that we saw earlier
 
 <!-- end_slide -->
 
@@ -628,6 +827,8 @@ LIMIT 5;
 
 Hierarchical Navigable Small World
 
+![](images/gifs/superhero.gif)
+
 <!-- end_slide -->
 
 # HNSW Graph Structure
@@ -636,13 +837,16 @@ Hierarchical Navigable Small World
 
 <!-- end_slide -->
 
-# HNSW: Key Differences
+# HNSW:
 
 **How it works:**
 - Hierarchical graph with multiple layers
 - Navigates from sparse (top) to dense (bottom) layers
 - Higher recall (~99% vs ~95%)
 - More consistent performance
+
+![](images/gifs/hnsw-network.gif)
+
 
 <!-- end_slide -->
 
@@ -780,7 +984,16 @@ Follow signs to closer ones
 
 <!-- end_slide -->
 
-# Create HNSW Index
+# Let's Try HNSW Index Now!
+
+**IVFFlat was good, but HNSW promises:**
+- ✅ Higher recall (~99% vs ~95%)
+- ✅ More consistent performance
+- ✅ Better for production workloads
+
+<!-- pause -->
+
+**Time to see it in action!** 🚀
 
 ```sql
 DROP INDEX docs_ivfflat_idx;
@@ -792,13 +1005,38 @@ WITH (m = 16, ef_construction = 200);
 
 <!-- end_slide -->
 
+# Does HNSW Deliver? Let's Find Out!
+
+```sql
+SET hnsw.ef_search = 40;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT 
+    id, 
+    content,
+    embedding <-> (SELECT embedding FROM docs WHERE id = 1) AS distance
+FROM docs
+ORDER BY embedding <-> (SELECT embedding FROM docs WHERE id = 1)
+LIMIT 5;
+```
+
+<!-- pause -->
+
+**Observe:**
+- ✅ Index Scan using docs_hnsw_idx
+- ✅ Execution time: ~5-15ms
+- ✅ Buffers: ~500 blocks
+- ✅ **70-150x faster than sequential scan!**
+
+<!-- end_slide -->
+
 # Performance Comparison
 
-| Method   | Time  | Buffers | Speedup | Accuracy    |
-|----------|-------|---------|---------|-------------|
-| Seq Scan | 500-2000ms | ~300,000  | 1x      | Perfect     |
-| IVFFlat  | 10-20ms | ~1,000     | 50-100x     | Approximate |
-| HNSW     | 5-15ms | ~500    | 70-150x     | High        |
+| Method   | Time  | Speedup | Accuracy    |
+|----------|-------|---------|-------------|
+| Seq Scan | 500-2000ms | 1x      | Perfect     |
+| IVFFlat  | 10-20ms | 50-100x     | Approximate |
+| HNSW     | 5-15ms | 70-150x     | High        |
 
 <!-- pause -->
 
@@ -812,7 +1050,6 @@ WITH (m = 16, ef_construction = 200);
 
 **Without LIMIT, Postgres won't use ANN indexes!**
 
-<!-- pause -->
 
 ```sql
 -- BAD: No LIMIT = Sequential scan (even with indexes!)
@@ -830,6 +1067,15 @@ LIMIT 10;
 **Why?** Without LIMIT, Postgres must sort ALL results → can't use approximate indexes.
 
 **With LIMIT:** Postgres knows you want top-K → uses ANN index for fast approximate search.
+
+<!-- pause -->
+
+*Forgetting LIMIT is like asking for "all the fries" and wondering why it's slow* 🍟
+
+![](images/gifs/fries.gif)
+
+<!-- pause -->
+
 
 <!-- end_slide -->
 
@@ -867,66 +1113,10 @@ UPDATE docs SET metadata = '{"views": 100}' WHERE id = 1;
 
 <!-- pause -->
 
-**Let's see it in action...**
+*Your database is basically hoarding old versions like: "But I might need this someday!"* 📦
 
-<!-- end_slide -->
+![](images/gifs/hoarder.gif)
 
-# MVCC Bloat - Demonstration
-
-<!-- column_layout: [1, 1] -->
-
-<!-- column: 0 -->
-
-```sql
--- Check size BEFORE update
-SELECT 
-  pg_size_pretty(pg_total_relation_size('docs')) 
-  AS total_size;
--- Expected: ~250 MB
-
--- Updates create dead tuples
-UPDATE docs 
-SET embedding = embedding 
-WHERE id <= 5000;
-
--- Check size AFTER update
-SELECT 
-  pg_size_pretty(pg_total_relation_size('docs')) 
-  AS total_size;
--- Expected: ~275 MB (10% of data updated!)
-```
-
-<!-- column: 1 -->
-
-```sql
--- Check bloat details
-SELECT 
-  n_live_tup, 
-  n_dead_tup,
-  round(100.0 * n_dead_tup / 
-    NULLIF(n_live_tup + n_dead_tup, 0), 1) 
-    AS dead_pct
-FROM pg_stat_user_tables 
-WHERE relname = 'docs';
-
--- Expected:
--- live: 50000, dead: 5000, dead_pct: 9%
-
--- Clean up
-VACUUM docs;
-
--- Check size after VACUUM
-SELECT 
-  pg_size_pretty(pg_total_relation_size('docs')) 
-  AS total_size;
--- Back to ~250 MB
-```
-
-<!-- reset_layout -->
-
-<!-- pause -->
-
-**Problem:** Each update duplicates ~4KB in TOAST
 
 <!-- end_slide -->
 
@@ -1063,6 +1253,15 @@ CREATE INDEX AFTER; -- One-time cost
 
 <!-- pause -->
 
+*HNSW on writes: "Hold on, let me update my entire social network first"* 📱
+
+![](images/gifs/slow-typing.gif)
+
+<!-- pause -->
+
+
+<!-- pause -->
+
 **For write-heavy workloads:**
 - Batch inserts without index, then rebuild
 - Use IVFFlat instead of HNSW
@@ -1105,14 +1304,6 @@ LIMIT 10;
 
 <!-- reset_layout -->
 
-<!-- pause -->
-
-| Method | The Analogy | How LIMIT Works |
-|--------|-------------|-----------------|
-| **Normal Query** (No Index) | **The Teacher:** Must grade every exam in the pile (1,000 papers), sort them all by score, then pick top 10 | **The Filter:** LIMIT applied at the end. Saves zero work - distance calculation happens for every row first |
-| **IVFFlat** (Clusters) | **The Berry Picker:** Sweeps specific rows. Must check every berry in those rows, carries a small basket (10 berries) | **The Basket:** LIMIT restricts memory. Still reads thousands of items in selected clusters, keeps top 10 in RAM |
-| **HNSW** (Graph) | **The Trick-or-Treater:** Runs house to house. Stops as soon as bag has 10 good pieces | **The Stop Sign:** LIMIT reduces computation. Algorithm stops searching graph early. Lower limit = fewer nodes visited |
-
 <!-- end_slide -->
 
 # When to Use What?
@@ -1124,9 +1315,9 @@ LIMIT 10;
 **Use IVFFlat when:**
 - ✅ Batch/analytics workloads
 - ✅ Can tolerate ~95% recall
-- ✅ Faster index build needed
+- ✅ Faster index build needed (~30-60s)
 - ✅ Memory constrained (smaller index)
-- ✅ Dataset changes frequently (rebuild is cheap)
+- ✅ Write-heavy workloads (faster inserts)
 
 **Example use cases:**
 - Nightly batch similarity jobs
@@ -1139,7 +1330,7 @@ LIMIT 10;
 - ✅ Low-latency queries required
 - ✅ Need high recall (~99%)
 - ✅ Production user-facing apps
-- ✅ Stable dataset (infrequent rebuilds)
+- ✅ Read-heavy workloads (slow inserts acceptable)
 - ✅ Can afford larger index size
 
 **Example use cases:**
@@ -1150,9 +1341,7 @@ LIMIT 10;
 
 <!-- reset_layout -->
 
-<!-- pause -->
-
-**TL;DR:** HNSW for production, IVFFlat for batch/dev
+**TL;DR:** HNSW for read-heavy production, IVFFlat for write-heavy or batch workloads
 
 <!-- end_slide -->
 
@@ -1186,31 +1375,9 @@ LIMIT 10;
 
 **TL;DR:** pgvector is perfect for 1k-10M vectors with PostgreSQL
 
-<!-- end_slide -->
+*Not too hot, not too cold, juuust right* 🐻
 
-# Production Checklist
-
-**Before deploying to production:**
-
-<!-- pause -->
-
-**Index Strategy:**
-- [ ] Use HNSW for user-facing queries
-- [ ] Create indexes AFTER bulk loading
-- [ ] Run ANALYZE after bulk inserts
-
-<!-- pause -->
-
-**Configuration:**
-- [ ] Set maintenance_work_mem = 512MB+
-- [ ] Configure connection pooling (pgBouncer)
-
-<!-- pause -->
-
-**Monitoring:**
-- [ ] Monitor TOAST bloat (pg_stat_user_tables)
-- [ ] Set up regular VACUUM schedule
-- [ ] Track query performance (pg_stat_statements)
+![](images/gifs/goldilocks.gif)
 
 <!-- end_slide -->
 
@@ -1230,13 +1397,27 @@ LIMIT 10;
 
 ✅ Always use EXPLAIN ANALYZE
 
+*TL;DR: Postgres can do semantic search. Yes, really.* 🎉
+
+![](images/gifs/celebration.gif)
+
+
 <!-- end_slide -->
 
 # The End
 
 **Postgres can handle semantic search at scale!**
 
-Questions?
+*Now go forth and vector!* 🚀
+
+<!-- pause -->
+
+Questions? 
+
+![](images/gifs/mic-drop.gif)
+
+<!-- pause -->
+
 
 <!-- end_slide -->
 

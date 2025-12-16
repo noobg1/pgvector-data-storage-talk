@@ -1,8 +1,12 @@
+import os
 import psycopg2
 from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Connect to database
-conn = psycopg2.connect("postgres://postgres:mysecret@localhost:5432/postgres")
+conn = psycopg2.connect(os.getenv('DATABASE_URL', 'postgres://postgres:mysecret@localhost:5432/postgres'))
 cur = conn.cursor()
 
 # Ensure pgvector extension and table exist
@@ -35,7 +39,7 @@ if texts:
             (content, vector.tolist())
         )
     conn.commit()
-    print(f"✓ Added {len(texts)} demo")
+    print(f"✓ Added {len(texts)} texts")
 else:
     print("No texts entered")
 

@@ -1,8 +1,12 @@
+import os
 import psycopg2
 from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # 1. Setup DB Connection
-conn = psycopg2.connect("postgres://postgres:mysecret@localhost:5432/postgres")
+conn = psycopg2.connect(os.getenv('DATABASE_URL', 'postgres://postgres:mysecret@localhost:5432/postgres'))
 cur = conn.cursor()
 
 # 2. Reset the Table
