@@ -76,10 +76,6 @@ date: "December 19, 2025"
 python demo.py compare
 ```
 
-<!-- pause -->
-
-*Try: "I love pizza" vs "Pizza is great"*
-
 <!-- end_slide -->
 
 # Now Let's Store These Embeddings
@@ -89,10 +85,6 @@ python demo.py compare
 ```bash
 python demo.py seed
 ```
-
-<!-- pause -->
-
-*Enter a few sentences about different topics*
 
 <!-- end_slide -->
 
@@ -104,10 +96,6 @@ python demo.py seed
 python demo.py search
 ```
 
-<!-- pause -->
-
-*Query: "italian food" → finds your pizza texts!*
-
 <!-- end_slide -->
 
 # What Just Happened? Let's Look Inside
@@ -116,16 +104,14 @@ python demo.py search
 
 <!-- column: 0 -->
 
-**Postgres stored your embeddings as vectors**
+**Postgres stored our embeddings as vectors**
 
 ```sql
 -- See all documents
 SELECT id, content FROM demo;
 
 -- Check embedding dimensions
-SELECT id, content, 
-       array_length(embedding::float4[], 1) AS dimensions
-FROM demo LIMIT 3;
+SELECT id, content, array_length(embedding::float4[], 1) AS dimensions FROM demo LIMIT 3;
 
 -- Peek at first 5 numbers
 SELECT id, content,
@@ -176,7 +162,6 @@ Why higher dimenions matter❓
 | `<=>` | Cosine | 1 - (a·b)/(‖a‖‖b‖) | Direction matters (text, most common) |
 | `<#>` | Inner Product | -(a·b) | Pre-normalized vectors |
 
-<!-- pause -->
 
 **Simple analogies:**
 - **L2:** Two people in a city - how many blocks apart?
@@ -241,7 +226,7 @@ CREATE TABLE IF NOT EXISTS docs (
 
 <!-- pause -->
 
-**Note:** 1024 dimensions to demonstrate TOAST behavior (embeddings > 2KB)
+**Note:** 1024 dimensions forces TOAST behavior (embeddings > 2KB)
 
 <!-- end_slide -->
 
@@ -416,54 +401,16 @@ TOAST = "The Oversized-Attribute Storage Technique"
 <!-- pause -->
 
 **Analogy:**
-```
-Main table = Your desk
-TOAST = Filing cabinet in another room
-
-Small items (384d) → Stay on desk
-Large items (1024d) → Go to filing cabinet
-```
-
-<!-- pause -->
-
-**Impact:** TOAST = extra I/O on every read!
 
 *It's like getting up to fetch a file every single time. Annoying, right?*
 
-<!-- pause -->
-
-![](images/gifs/walking.gif)
-
-<!-- end_slide -->
-
-# TOAST Storage Check
-
-```sql
-SELECT 
-  pg_column_size(embedding) AS bytes,
-  CASE 
-    WHEN pg_column_size(embedding) > 2000 
-    THEN 'TOASTed ✓' 
-    ELSE 'Inline' 
-  END AS storage
-FROM docs LIMIT 1;
-```
-
-<!-- pause -->
-
-**The Problem:**
-- Postgres moves values > 2 KB to TOAST tables
-- Our 1024d vectors = ~4 KB each
-- **Result:** 75-80% of data in TOAST
-- **Impact:** Extra I/O on every read
+**Impact:** TOAST = extra I/O on every read!
 
 <!-- end_slide -->
 
 # Chapter 5: The Baseline - Search Without Indexes
 
 **Now we understand storage. Let's actually search for similar documents!**
-
-<!-- pause -->
 
 **First, let's see how it works WITHOUT any indexes...**
 
@@ -480,8 +427,6 @@ FROM docs
 ORDER BY distance
 LIMIT 5;
 ```
-
-<!-- pause -->
 
 **Notice:** Results are semantically similar! But how fast is it?
 
@@ -842,7 +787,7 @@ Hierarchical Navigable Small World
 **How it works:**
 - Hierarchical graph with multiple layers
 - Navigates from sparse (top) to dense (bottom) layers
-- Higher recall (~99% vs ~95%)
+- Higher recall
 - More consistent performance
 
 ![](images/gifs/hnsw-network.gif)
@@ -901,12 +846,15 @@ Step 3: Drop to LAYER 0 (from Doc4)
 │   Doc1 ──── Doc2 ──── Doc3              │
 │     │                   │               │
 │   [Doc4] ──── Doc5 ──── Doc6            │
-│     ↓          ↓         ↓              │
-│   0.02       0.04      0.10             │
 │                                         │
-│ Check all Doc4's neighbors              │
-│ Expand to Doc5's neighbors              │
-│ → Final: [Doc4, Doc5]                   │
+│ Distance from Query:                    │
+│   Doc4: 0.02  ← CLOSEST!                │
+│   Doc1: 0.03  (Doc4's neighbor)         │
+│   Doc5: 0.04  (Doc4's neighbor)         │
+│                                         │
+│ Check Doc4's neighbors (Doc1, Doc5)     │
+│ None closer than 0.02 → Stop at Doc4    │
+│ → Final: Doc4 (nearest neighbor)        │
 └─────────────────────────────────────────┘
 ```
 
@@ -927,7 +875,7 @@ Query [0.72, 0.82, 0.08]
   │
   │ Layer 0: All Streets
   └──→ Doc4 ──── Doc5 ──── Doc6
-        ✓✓      ✓✓       ✗
+        ✓✓       ✗       ✗
 ```
 
 **Analogy:** Like GPS navigation - use highways first, then local roads
@@ -1003,6 +951,10 @@ ON docs USING hnsw (embedding vector_l2_ops)
 WITH (m = 16, ef_construction = 200);
 ```
 
+**Parameters:**
+- `m = 16`: Max connections per node (higher = better recall, larger index)
+- `ef_construction = 200`: Build-time search depth (higher = better quality, slower build)
+
 <!-- end_slide -->
 
 # Does HNSW Deliver? Let's Find Out!
@@ -1020,13 +972,16 @@ ORDER BY embedding <-> (SELECT embedding FROM docs WHERE id = 1)
 LIMIT 5;
 ```
 
+**Parameter:**
+- `ef_search = 40`: Query-time search depth (higher = better recall, slower search)
+  - Default: 40
+  - Trade-off: Speed vs accuracy
+
 <!-- pause -->
 
 **Observe:**
 - ✅ Index Scan using docs_hnsw_idx
 - ✅ Execution time: ~5-15ms
-- ✅ Buffers: ~500 blocks
-- ✅ **70-150x faster than sequential scan!**
 
 <!-- end_slide -->
 
@@ -1066,7 +1021,9 @@ LIMIT 10;
 
 **Why?** Without LIMIT, Postgres must sort ALL results → can't use approximate indexes.
 
-**With LIMIT:** Postgres knows you want top-K → uses ANN index for fast approximate search.
+```
+Classical queries scan and sort all rows to return the top N; vector search maintains a fixed-capacity leaderboard, dynamically swapping out weaker matches for better ones as it traverses the graph
+```
 
 <!-- pause -->
 
@@ -1109,11 +1066,12 @@ UPDATE docs SET metadata = '{"views": 100}' WHERE id = 1;
 ```
 - Postgres copies the ENTIRE row (including 4KB embedding!)
 - Old 4KB embedding becomes "dead tuple" in TOAST
-- Do this 5000 times = 20 GB of dead data
+- Do this 5000 times = 20 MB of dead data
+- Scale to 50k docs with frequent updates = GBs of bloat!
 
 <!-- pause -->
 
-*Your database is basically hoarding old versions like: "But I might need this someday!"* 📦
+*Database is basically hoarding old versions like: "But I might need this someday!"* 📦
 
 ![](images/gifs/hoarder.gif)
 
@@ -1232,43 +1190,6 @@ CREATE INDEX AFTER; -- One-time cost
 
 <!-- end_slide -->
 
-# Production Tips #5b: Write Performance
-
-**Indexes slow down writes!**
-
-<!-- pause -->
-
-| Scenario | Insert Time | Slowdown |
-|----------|-------------|----------|
-| No index | ~1-2ms | baseline |
-| IVFFlat | ~2-10ms | 2-10x slower |
-| HNSW | ~10-50ms | 10-50x slower |
-
-<!-- pause -->
-
-**Why HNSW is slower:**
-- Must update graph structure
-- Rebalance connections
-- Maintain hierarchical layers
-
-<!-- pause -->
-
-*HNSW on writes: "Hold on, let me update my entire social network first"* 📱
-
-![](images/gifs/slow-typing.gif)
-
-<!-- pause -->
-
-
-<!-- pause -->
-
-**For write-heavy workloads:**
-- Batch inserts without index, then rebuild
-- Use IVFFlat instead of HNSW
-- Separate embedding table
-
-<!-- end_slide -->
-
 # Production Tips #6
 
 **One more critical detail about vector queries...**
@@ -1302,6 +1223,10 @@ ORDER BY embedding <-> '[...]'
 LIMIT 10;
 ```
 
+1. Think 10 like bucket
+2. Add & Keeps the best 10 in that bucket
+3. Discards others probabilistically
+
 <!-- reset_layout -->
 
 <!-- end_slide -->
@@ -1327,11 +1252,10 @@ LIMIT 10;
 <!-- column: 1 -->
 
 **Use HNSW when:**
-- ✅ Low-latency queries required
+- ✅ Production user-facing apps (low-latency required)
 - ✅ Need high recall (~99%)
-- ✅ Production user-facing apps
 - ✅ Read-heavy workloads (slow inserts acceptable)
-- ✅ Can afford larger index size
+- ✅ Can afford larger index size & build time
 
 **Example use cases:**
 - Real-time search APIs
@@ -1375,29 +1299,27 @@ LIMIT 10;
 
 **TL;DR:** pgvector is perfect for 1k-10M vectors with PostgreSQL
 
-*Not too hot, not too cold, juuust right* 🐻
-
-![](images/gifs/goldilocks.gif)
-
 <!-- end_slide -->
 
 # Key Takeaways
 
-✅ Vectors > 2KB go to TOAST (extra I/O)
+**The Big Picture:**
 
-✅ ANN indexes give 50-150x speedup
+PostgreSQL + pgvector handles 1k-10M vectors in production. No specialized database needed.
 
-✅ HNSW is best for production (high recall, low latency)
+We covered:
 
-✅ Smaller embeddings = better performance (384d > 1024d)
+**- Storage Reality**
 
-✅ Separate tables for frequent updates
+**- Index Strategy**
 
-✅ **Always use LIMIT** with vector queries
+**- Production Gotchas**
 
-✅ Always use EXPLAIN ANALYZE
+**The Bottom Line:**
 
-*TL;DR: Postgres can do semantic search. Yes, really.* 🎉
+ACID + SQL + existing infrastructure.
+
+*Postgres can do semantic search* 🎉
 
 ![](images/gifs/celebration.gif)
 
@@ -1410,13 +1332,13 @@ LIMIT 10;
 
 *Now go forth and vector!* 🚀
 
-<!-- pause -->
 
-**Questions?** 
+**Questions?**
 
-**Slides & Code:** 
+**Slides & Code:**
 
 ```
+█████████████████████████████████████
 █████████████████████████████████████
 ████ ▄▄▄▄▄ █▀ ▄ ▀█▄ ▀█▄▄▀█ ▄▄▄▄▄ ████
 ████ █   █ █▄█  ▄█ ▀█▄ ▄▄█ █   █ ████
@@ -1434,11 +1356,10 @@ LIMIT 10;
 ████ █▄▄▄█ █▀ ▀▄▄  ▀▀▀█  ▀██ ▄▄▀▄████
 ████▄▄▄▄▄▄▄█▄▄███████▄██▄▄▄▄▄▄█▄█████
 █████████████████████████████████████
+█████████████████████████████████████
 ```
 
-<!-- pause -->
-
-![](images/gifs/mic-drop.gif)
+![](images/gifs/thank-you.gif)
 
 
 <!-- end_slide -->
