@@ -137,10 +137,11 @@ Why higher dimenions matter❓
 # Chapter 2: How Do We Compare Vectors?
 
 **Now that we have embeddings stored, how do we find similar ones?**
-
+ 
 <!-- pause -->
+**We need a way to compare and that's distance functions!**
 
-**We need distance functions!**
+TODO:// Add two points ditance in 2D or 3D
 
 <!-- pause -->
 
@@ -241,13 +242,10 @@ python generate_demo_embeddings.py
 
 **This will:**
 - Generate realistic random text using Faker
-- Create 1024-dimensional embeddings (to demonstrate TOAST!)
+- Create 1024-dimensional embeddings (we will demonstrate TOAST!)
 - Insert 50k rows into `docs` table
-- Takes ~10-15 minutes
 
-<!-- pause -->
-
-**Or use existing data if already loaded!**
+**I have preloaded this data to save time**
 
 <!-- end_slide -->
 
@@ -329,8 +327,6 @@ WHERE c.relname = 'docs';
 - Heap size: ~11 MB (just row headers)
 - TOAST size: ~260 MB (94% of data is here!)
 - Total: ~276 MB
-
-<!-- pause -->
 
 **Key insight:** 1024d embeddings go to TOAST (> 2KB threshold) ✓
 
@@ -509,9 +505,7 @@ Why Approximate? Because exact search is too slow!
 
 ![](images/gifs/interstellar.gif)
 
-<!-- pause -->
-
-Let's understand search methods first... apart from Btree variants used in for non vector indexing
+Let's understand search methods first... apart from B+ tree variants used in for non vector indexing
 
 <!-- end_slide -->
 
