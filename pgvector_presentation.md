@@ -1320,6 +1320,9 @@ ACID + SQL + existing infrastructure.
 
 **Questions?**
 
+📬 **Get in touch:** jeevandc24@iimb.ac.in  
+*(Not active on social media)*
+
 **Slides & Code:**
 
 ```
