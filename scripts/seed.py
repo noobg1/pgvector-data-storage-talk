@@ -24,22 +24,23 @@ conn.commit()
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
 print("Enter texts (one per line, empty line to finish):")
-texts = []
+count = 0
 while True:
     text = input("> ")
     if not text:
         break
-    texts.append(text)
-
-if texts:
-    embeddings = model.encode(texts)
-    for content, vector in zip(texts, embeddings):
-        cur.execute(
-            "INSERT INTO demo (content, embedding) VALUES (%s, %s)", 
-            (content, vector.tolist())
-        )
+    
+    embedding = model.encode(text)
+    cur.execute(
+        "INSERT INTO demo (content, embedding) VALUES (%s, %s)", 
+        (text, embedding.tolist())
+    )
     conn.commit()
-    print(f"✓ Added {len(texts)} texts")
+    count += 1
+    print(f"✓ Added to DB")
+
+if count > 0:
+    print(f"\nTotal: {count} texts added")
 else:
     print("No texts entered")
 

@@ -141,17 +141,9 @@ Why higher dimenions matter❓
 <!-- pause -->
 **We need a way to compare and that's distance functions!**
 
-TODO:// Add two points ditance in 2D or 3D
+![](images/dist-2-points.png)
 
-<!-- pause -->
 
-<!-- column_layout: [1] -->
-
-<!-- column: 0 -->
-
-![](images/gifs/compare-vectors.gif)
-
-<!-- reset_layout -->
 
 <!-- end_slide -->
 
@@ -224,10 +216,6 @@ CREATE TABLE IF NOT EXISTS docs (
     embedding vector(1024)
 );
 ```
-
-<!-- pause -->
-
-**Note:** 1024 dimensions forces TOAST behavior (embeddings > 2KB)
 
 <!-- end_slide -->
 
@@ -356,7 +344,7 @@ TOAST: ████████░░░░ ~200 MB
 Heap:  ████████████ ~50 MB
 TOAST: ░░░░░░░░░░░░  ~0 MB
 ```
-✓ Embeddings stay in heap (much faster!)
+✓ Embeddings stay in heap (no extra I/O!)
 
 <!-- column: 1 -->
 
@@ -416,13 +404,15 @@ SELECT content FROM docs WHERE id = 97;
 
 -- Find similar docs
 SELECT id, LEFT(content, 150) as contect_trunc,
-       embedding <-> (
+       embedding <=> (
          SELECT embedding FROM docs WHERE id = 97
        ) AS distance
 FROM docs
 ORDER BY distance
 LIMIT 5;
 ```
+
+<!-- pause -->
 
 **Notice:** Results are semantically similar! But how fast is it?
 
@@ -443,8 +433,8 @@ LIMIT 5;
 ```sql
 EXPLAIN ANALYZE
 SELECT id, content,
-       embedding <-> (
-         SELECT embedding FROM docs WHERE id = 1
+       embedding <=> (
+         SELECT embedding FROM docs WHERE id = 75
        ) AS distance
 FROM docs
 ORDER BY distance
@@ -463,7 +453,7 @@ LIMIT 5;
 - Seq Scan on docs
 - Reads all 50,000 rows
 - ~500-2000ms query time
-- 300,000+ buffer reads (TOAST!)
+- High buffer reads (TOAST!)
 
 <!-- column: 1 -->
 
@@ -513,7 +503,7 @@ Let's understand search methods first... apart from B+ tree variants used in for
 
 **The name tells the story:**
 - **Inverted File:** Like a book index - points to where things are
-- **Flat:** Vectors stored as-is (no compression)
+- **Flat:** Vectors stored as-is
 
 <!-- pause -->
 
@@ -714,7 +704,7 @@ IVFFlat:         Jump to similar clusters
 SET maintenance_work_mem = '512MB';
 
 CREATE INDEX docs_ivfflat_idx 
-ON docs USING ivfflat (embedding vector_l2_ops)
+ON docs USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 200);
 
 ANALYZE docs;
@@ -723,7 +713,7 @@ ANALYZE docs;
 
 **Parameters:**
 - lists = 200 (≈ sqrt(50k) ≈ 224) - So 200 clusters
-- vector_l2_ops - distance based (euclidean) - `<->` operator that we saw earlier
+- vector_cosine_ops - cosine distance - `<=>` operator for normalized embeddings
 
 <!-- end_slide -->
 
@@ -735,7 +725,7 @@ SET ivfflat.probes = 1;
 
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT id, content,
-       embedding <-> (
+       embedding <=> (
          SELECT embedding FROM docs WHERE id = 1
        ) AS distance
 FROM docs
@@ -941,13 +931,14 @@ Follow signs to closer ones
 DROP INDEX docs_ivfflat_idx;
 
 CREATE INDEX docs_hnsw_idx 
-ON docs USING hnsw (embedding vector_l2_ops)
+ON docs USING hnsw (embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 200);
 ```
 
 **Parameters:**
 - `m = 16`: Max connections per node (higher = better recall, larger index)
 - `ef_construction = 200`: Build-time search depth (higher = better quality, slower build)
+- `vector_cosine_ops` : cosine distance - `<=>` operator for normalized embeddings
 
 <!-- end_slide -->
 
@@ -960,9 +951,9 @@ EXPLAIN (ANALYZE, BUFFERS)
 SELECT 
     id, 
     content,
-    embedding <-> (SELECT embedding FROM docs WHERE id = 1) AS distance
+    embedding <=> (SELECT embedding FROM docs WHERE id = 1) AS distance
 FROM docs
-ORDER BY embedding <-> (SELECT embedding FROM docs WHERE id = 1)
+ORDER BY embedding <=> (SELECT embedding FROM docs WHERE id = 1)
 LIMIT 5;
 ```
 
@@ -1003,11 +994,11 @@ LIMIT 5;
 ```sql
 -- BAD: No LIMIT = Sequential scan (even with indexes!)
 SELECT * FROM docs 
-ORDER BY embedding <-> '[...]';
+ORDER BY embedding <=> '[...]';
 
 -- GOOD: LIMIT = Uses ANN index
 SELECT * FROM docs 
-ORDER BY embedding <-> '[...]' 
+ORDER BY embedding <=> '[...]' 
 LIMIT 10;
 ```
 
@@ -1213,7 +1204,7 @@ LIMIT 10;
 ```sql
 -- LIMIT = "use ANN index!"
 SELECT * FROM docs 
-ORDER BY embedding <-> '[...]' 
+ORDER BY embedding <=> '[...]' 
 LIMIT 10;
 ```
 
