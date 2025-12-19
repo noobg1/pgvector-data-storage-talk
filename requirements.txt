@@ -1,6 +1,5 @@
 psycopg2-binary
 sentence-transformers
-faker
+datasets
 python-dotenv
 tqdm
-dotenv

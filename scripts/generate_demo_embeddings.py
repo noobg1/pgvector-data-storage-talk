@@ -15,49 +15,47 @@ from tqdm import tqdm
 # Load environment variables
 load_dotenv()
 
-# Import Faker for realistic random text
+# Import datasets for Wikipedia content
 try:
-    from faker import Faker
-    fake = Faker()
-    HAS_FAKER = True
+    from datasets import load_dataset
+    HAS_DATASETS = True
 except ImportError:
-    HAS_FAKER = False
-    print("⚠️  Faker not installed. Install with: pip install faker")
-    print("   Run: pip install faker")
+    HAS_DATASETS = False
+    print("⚠️  datasets not installed. Install with: pip install datasets")
     exit(1)
 
+# Load WikiText dataset
+print("Loading WikiText dataset...")
+wiki_dataset = load_dataset("wikitext", "wikitext-103-v1", split="train", streaming=True)
+wiki_iter = iter(wiki_dataset)
+
 def generate_diverse_text():
-    """Generate unique, diverse, realistic text using Faker."""
-    text_generators = [
-        # Technical/Business content
-        lambda: f"{fake.catch_phrase()}. {fake.bs().capitalize()}. {fake.sentence(nb_words=random.randint(15, 25))}",
-        lambda: f"{fake.company()} is working on {fake.bs()} to improve {fake.catch_phrase().lower()}. {fake.paragraph(nb_sentences=2)}",
-        lambda: f"Research shows that {fake.sentence()} This has implications for {fake.bs()}. {fake.text(max_nb_chars=100)}",
-        lambda: f"{fake.job()} professionals are increasingly focused on {fake.bs()} and {fake.catch_phrase().lower()}. {fake.paragraph(nb_sentences=1)}",
-        
-        # News/Article style
-        lambda: f"{fake.sentence(nb_words=random.randint(10, 15))} {fake.paragraph(nb_sentences=3)}",
-        lambda: f"{fake.text(max_nb_chars=200)}",
-        
-        # Product/Service descriptions
-        lambda: f"Introducing {fake.word().capitalize()}: {fake.catch_phrase()}. {fake.bs().capitalize()}. {fake.sentence(nb_words=20)}",
-        lambda: f"Our new {fake.word()} solution helps organizations {fake.bs()} while {fake.catch_phrase().lower()}. {fake.paragraph(nb_sentences=2)}",
-        
-        # Educational/Informative
-        lambda: f"Understanding {fake.word()}: {fake.paragraph(nb_sentences=3)} Key benefits include {fake.bs()} and {fake.catch_phrase().lower()}.",
-        lambda: f"The {fake.word()} industry is being transformed by {fake.bs()}. {fake.paragraph(nb_sentences=2)} Experts predict {fake.sentence()}",
-        
-        # Mixed formats
-        lambda: f"{fake.sentence()} {fake.sentence()} {fake.sentence()} {fake.catch_phrase()}.",
-        lambda: f"{fake.paragraph(nb_sentences=random.randint(2, 4))}",
-        lambda: f"{fake.text(max_nb_chars=random.randint(150, 250))}",
-        
-        # Conversational
-        lambda: f"Have you heard about {fake.word()}? {fake.sentence()} {fake.paragraph(nb_sentences=2)}",
-        lambda: f"Many people wonder about {fake.bs()}. {fake.paragraph(nb_sentences=3)}",
-    ]
-    
-    return random.choice(text_generators)()
+    """Get meaningful text from WikiText."""
+    global wiki_iter
+    while True:
+        try:
+            article = next(wiki_iter)
+            text = article['text'].strip()
+            
+            # Skip empty or very short entries
+            if len(text) < 100:
+                continue
+            
+            # Extract a meaningful chunk (100-300 chars)
+            sentences = [s.strip() for s in text.split('.') if s.strip()]
+            if not sentences:
+                continue
+                
+            num_sentences = random.randint(1, 3)
+            chunk = '. '.join(sentences[:num_sentences])
+            
+            if len(chunk) > 300:
+                chunk = chunk[:300].rsplit('.', 1)[0] + '.'
+            if len(chunk) >= 50:
+                return chunk
+        except:
+            wiki_iter = iter(wiki_dataset)
+            continue
 
 def main():
     print("🚀 Generating embeddings for pgvector demo...")
@@ -95,7 +93,7 @@ def main():
     # Generate and insert documents
     print("\n4. Generating 50,000 diverse documents with embeddings...")
     print("   This will take 10-15 minutes...")
-    print("   ✓ Using Faker for realistic random text generation")
+    print("   ✓ Using WikiText dataset for meaningful content")
     
     batch_size = 100
     total_docs = 50000
@@ -165,7 +163,7 @@ def main():
     print("   - 50,000 diverse documents")
     print("   - 1024 dimensions (~4 KB per vector)")
     print("   - Vectors are TOASTed (> 2KB threshold)")
-    print("   - Realistic random text content via Faker")
+    print("   - Real WikiText content")
     print("=" * 60)
     
     conn.close()
