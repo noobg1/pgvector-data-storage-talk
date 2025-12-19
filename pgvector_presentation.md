@@ -111,7 +111,9 @@ python demo.py search
 SELECT id, content FROM demo;
 
 -- Check embedding dimensions
-SELECT id, content, array_length(embedding::float4[], 1) AS dimensions FROM demo LIMIT 3;
+SELECT id, content, array_length(embedding::float4[], 1) 
+AS dimensions 
+FROM demo LIMIT 3;
 
 -- Peek at first 5 numbers
 SELECT id, content,
