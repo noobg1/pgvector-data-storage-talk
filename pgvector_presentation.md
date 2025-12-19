@@ -1740,4 +1740,15 @@ SET hnsw.ef_search = 100;
 - `ef_construction = 200` 
   build quality
 
+<!-- end_slide -->
+
+# References
+
+- HNSW: https://www.pinecone.io/learn/series/faiss/hnsw/
+- HNSW: https://www.mongodb.com/resources/basics/hierarchical-navigable-small-world
+- IVFFlat: https://milvus.io/docs/ivf-flat.md
+- TOAST: https://www.postgresql.org/docs/current/storage-toast.html
+- TOAST: https://www.tigerdata.com/blog/what-is-toast-and-why-it-isnt-enough-for-data-compression-in-postgres
+- MVCC: https://www.postgresql.org/docs/7.1/mvcc.html
+
 
