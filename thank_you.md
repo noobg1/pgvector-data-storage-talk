@@ -10,8 +10,10 @@
 
 **Volunteers & TA Team** Ashley, Shivani, Matla, Vemala
 
-**Org Team:** Deepali, Parvathy, Subhasish
+**Org Team (PR, Branding):** Deepali, Parvathy, Subhasish, Abhishek, Aishwarya
 
 **Leadership:** Anthil Anbazhagan, Amit Kumar, Pradeep Bonda, Soumendra Dhar
+
+**TechBrews Org:** Kiran Bagul, Akshay Agarwal
 
 **See you at the next meetup!** 🚀
